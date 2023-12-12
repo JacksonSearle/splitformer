@@ -455,8 +455,9 @@ if __name__ == "__main__":
             # Update parameters
             optimizer.step()
  
-            # Run validation 3 times per epoch
-            if batch_idx % (len(train_loader) // 3) == 0:
+            # Run validation n times per epoch
+            n = 1
+            if batch_idx % (len(train_loader) // n) == 0:
                 # Print train loss
                 print(f"Train Loss: {loss.item()}")
                 model.eval()
