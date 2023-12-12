@@ -7,7 +7,8 @@ from torch.utils.data import dataset
 from argparse import ArgumentParser
 from torchscale.architecture.config import DecoderConfig, RetNetConfig
 from torchscale.architecture.decoder import Decoder
-from torchscale.architecture.retnet import RetNetDecoder
+from torchscale.architecture.retnet import RetNetDecoder 
+from torchscale.architecture.splitformer import SplitformerDecoder
  
  
 from torchinfo import summary as model_summary
@@ -97,7 +98,7 @@ class RetNetModel(nn.Module):
         self.text_embeddings = nn.Embedding(
                 num_embeddings=vocab_size,
                 embedding_dim=embed_dim,
-                padding_idx=0)
+                padding_idx=1)
  
  
         #TODO: Check that we are masking correctly
@@ -226,10 +227,138 @@ class TransformerModel(nn.Module):
         self.text_embeddings = nn.Embedding(
                 num_embeddings=vocab_size,
                 embedding_dim=embed_dim,
-                padding_idx=0)
+                padding_idx=1)
  
  
         self.decoder_stack = Decoder(config, embed_tokens=self.text_embeddings)
+ 
+ 
+    def forward(self, x: torch.Tensor, encoder_padding_mask=False) -> torch.Tensor:
+        logits, other_stuff = self.decoder_stack(x, encoder_padding_mask=encoder_padding_mask)
+        return logits
+   
+    def generate_text(self, start_string, generation_length=100, device='cuda'):
+        # Evaluation mode
+        self.decoder_stack.eval()
+        self.decoder_stack.to(device)
+ 
+ 
+        # Convert start string to numbers
+        input_eval = self.tokenizer.stoi(start_string)
+        print(input_eval)
+        input_eval = torch.tensor(input_eval).unsqueeze(0).to(device)
+ 
+ 
+        # Empty list to store generated text
+        text_generated = []
+ 
+ 
+        # No gradients needed
+        with torch.no_grad():
+            for _ in range(generation_length):
+                predictions = self.forward(input_eval)
+                # Apply softmax to get probabilities
+                predictions = F.softmax(predictions, dim=-1)
+                # Get the last predicted word
+                predicted_id = predictions.argmax(dim=-1)[..., -1]
+ 
+ 
+                # Add predicted word to the input (to be used as next input sequence)
+                input_eval = torch.cat([input_eval, predicted_id.unsqueeze(-1)], dim=-1)
+ 
+ 
+                # Convert predicted word id to word
+                predicted_word = self.tokenizer.itos(predicted_id.tolist())
+ 
+ 
+                text_generated.append(predicted_word)
+ 
+ 
+        return start_string + ' ' + ' '.join(text_generated)
+    
+
+class SplitformerModel(nn.Module):
+    def __init__(
+            self,
+            embed_dim: int,
+            value_embed_dim: int,
+            attention_heads: int,
+            ffn_dim: int,
+            layers: int,
+            dropout: float,
+            activation_dropout: float,
+            vocab_size: int,
+            checkpoint_activations: bool,
+            fsdp: bool,
+            max_seq_len: int,
+            tokens_per_pass: int):
+        """ Use parameters to create corresponding RetNet model
+        Args:
+            embed_dim (int): Dimension size of each embedded token.
+            value_embed_dim (int): Value embed dimension size.
+            attention_heads (int): Number of attention heads in MHA module.
+            ffn_dim (int): Hidden layer size of Feed Forward Network (FFN).
+            layers (int): Number of retention network layers.
+            dropout (float): Probability of an element to be zeroed during dropout.
+            activation_dropout (float): Probability of an element to be zeroed
+                during dropout after activation between FFN layers.
+            vocab_size (int): Maximum vocabulary size (number of unique tokens in
+                vocabulary.
+            checkpoint_activations (bool): Whether to perform checkpointing or not
+                (done with the FairScale library).
+            fsdp (bool): Whether to shard Module parameters across data parallel
+                workers or not (with the FairScale library).
+            max_seq_len (int): Size of context window.
+            tokens_per_pass (int): Number of tokens to generate for each forward pass in the splitformer model.
+        """
+        super().__init__()
+ 
+ 
+        self.model_params = {
+                "embed_dim": embed_dim,
+                "value_embed_dim": value_embed_dim,
+                "attention_heads": attention_heads,
+                "ffn_dim": ffn_dim,
+                "layers": layers,
+                "dropout": dropout,
+                "activation_dropout": activation_dropout,
+                "vocab_size": vocab_size,
+                "checkpoint_activations": checkpoint_activations,
+                "fsdp": fsdp,
+                "max_seq_len": max_seq_len,
+                "tokens_per_pass": tokens_per_pass
+                }
+ 
+ 
+        config = DecoderConfig(
+                decoder_embed_dim=embed_dim,
+                decoder_value_embed_dim=value_embed_dim,
+                decoder_attention_heads=attention_heads,
+                decoder_ffn_embed_dim=ffn_dim,
+                decoder_layers=layers,
+                dropout=dropout,
+                activation_dropout=activation_dropout,
+                vocab_size=vocab_size,
+                checkpoint_activations=checkpoint_activations,
+                fsdp=fsdp)
+ 
+ 
+        # Save max_seq_len for padding later
+        self.max_seq_len = max_seq_len
+ 
+ 
+        # Save vocab_size for final dimensions later
+        self.vocab_size = vocab_size
+ 
+ 
+        # Create embeddings with index 0 representing padding
+        self.text_embeddings = nn.Embedding(
+                num_embeddings=vocab_size,
+                embedding_dim=embed_dim,
+                padding_idx=1)
+ 
+ 
+        self.decoder_stack = SplitformerDecoder(config, embed_tokens=self.text_embeddings)
  
  
     def forward(self, x: torch.Tensor, encoder_padding_mask=False) -> torch.Tensor:
@@ -302,7 +431,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, required=True,
             help="Learning rate of model to train.")
     parser.add_argument("-m", "--model", required=True,
-            choices=["retnet", "transformer"],
+            choices=["retnet", "transformer", "splitformer"],
             help="Name of model architecture to train.")
     parser.add_argument("-n", "--heads", type=int, default=3,
             help="Number of heads. Head architecture changes based on model.")
@@ -318,6 +447,8 @@ if __name__ == "__main__":
             help="Device to use (GPU).")
     parser.add_argument("--epochs", type=int, default=10,
             help="Number of epochs to train for.")
+    parser.add_argument("--tokens-per-pass", type=int, default=2,
+            help="Number of tokens to generate for each forward pass in the splitformer model.")
  
  
     args = parser.parse_args()
@@ -363,6 +494,20 @@ if __name__ == "__main__":
                 checkpoint_activations=args.checkpoint_activations,
                 fsdp=args.fsdp,
                 max_seq_len=args.seq_len)
+    elif args.model == "splitformer":
+        model = SplitformerModel(
+                embed_dim=args.embed_dim,
+                value_embed_dim=args.value_embed_dim,
+                attention_heads=args.heads,
+                ffn_dim=args.ffn_dim,
+                layers=args.layers,
+                dropout=args.dropout,
+                activation_dropout=args.activation_dropout,
+                vocab_size=args.vocab_size,
+                checkpoint_activations=args.checkpoint_activations,
+                fsdp=args.fsdp,
+                max_seq_len=args.seq_len,
+                tokens_per_pass=args.tokens_per_pass)
    
  
  
@@ -454,6 +599,11 @@ if __name__ == "__main__":
        
             # Update parameters
             optimizer.step()
+
+            #! Remove this
+            # Print loss
+            print(f"Train Loss: {loss.item()}")
+            break
  
             # Run validation n times per epoch
             n = 1
