@@ -621,7 +621,6 @@ if __name__ == "__main__":
                 C = args.vocab_size
                 # A == S*C
                 B, T, A = predictions.shape
-                #TODO: Check that this is right for a test example
                 predictions = predictions.reshape(B * T * S, C)
                 B, T, S = targets.shape
                 targets = targets.reshape(B * T * S)
@@ -634,11 +633,6 @@ if __name__ == "__main__":
        
             # Update parameters
             optimizer.step()
-
-            #! Remove this
-            # Print loss
-            print(f"Train Loss: {loss.item()}")
-            break
  
             # Run validation n times per epoch
             n = 1
@@ -657,11 +651,21 @@ if __name__ == "__main__":
                         # Get validation predictions
                         val_predictions = model(val_inputs)
                        
-                        # Reshape the model outputs to match the expected shape for CrossEntropyLoss
-                        B, T, C = val_predictions.shape
-                        val_predictions = val_predictions.reshape(B * T, C)
-                        B, T = val_targets.shape
-                        val_targets = val_targets.reshape(B * T)
+                        if args.model != "splitformer": 
+                            # Reshape the model outputs to match the expected shape for CrossEntropyLoss
+                            B, T, C = val_predictions.shape
+                            val_predictions = val_predictions.reshape(B * T, C)
+                            B, T = val_targets.shape
+                            val_targets = val_targets.reshape(B * T)
+                        else:
+                            # Reshape the model outputs to match the expected shape for CrossEntropyLoss
+                            S = args.tokens_per_pass
+                            C = args.vocab_size
+                            # A == S*C
+                            B, T, A = val_predictions.shape
+                            val_predictions = val_predictions.reshape(B * T * S, C)
+                            B, T, S = val_targets.shape
+                            val_targets = val_targets.reshape(B * T * S)
                        
                         # Calculate validation loss
                         val_loss = loss_fn(val_predictions, val_targets)
@@ -679,34 +683,44 @@ if __name__ == "__main__":
     # torch.save(model, f"{args.model}.pt")
  
  
-    # # Test the model
-    # print('\nTesting model...')
-    # model.eval()
-    # total_loss = 0
-    # total_samples = 0
-    # with torch.no_grad():
-    #     for inputs, targets in tqdm(test_loader, mininterval=60): # Prints progress bar every mininterval seconds
-    #         # Put inputs and targets on device
-    #         inputs = inputs.to(device)
-    #         targets = targets.to(device)
+    # Test the model
+    print('\nTesting model...')
+    model.eval()
+    total_loss = 0
+    total_samples = 0
+    with torch.no_grad():
+        for inputs, targets in tqdm(test_loader, mininterval=60): # Prints progress bar every mininterval seconds
+            # Put inputs and targets on device
+            inputs = inputs.to(device)
+            targets = targets.to(device)
            
-    #         # Get model predictions
-    #         predictions = model(inputs)
+            # Get model predictions
+            predictions = model(inputs)
            
-    #         # Reshape the model outputs to match the expected shape for CrossEntropyLoss
-    #         B, T, C = predictions.shape
-    #         predictions = predictions.reshape(B * T, C)
-    #         B, T = targets.shape
-    #         targets = targets.reshape(B * T)
+            if args.model != "splitformer": 
+                # Reshape the model outputs to match the expected shape for CrossEntropyLoss
+                B, T, C = predictions.shape
+                predictions = predictions.reshape(B * T, C)
+                B, T = targets.shape
+                targets = targets.reshape(B * T)
+            else:
+                # Reshape the model outputs to match the expected shape for CrossEntropyLoss
+                S = args.tokens_per_pass
+                C = args.vocab_size
+                # A == S*C
+                B, T, A = predictions.shape
+                predictions = predictions.reshape(B * T * S, C)
+                B, T, S = targets.shape
+                targets = targets.reshape(B * T * S)
            
-    #         # Calculate loss
-    #         loss = loss_fn(predictions, targets)
-    #         total_loss += loss.item() * inputs.size(0)
-    #         total_samples += inputs.size(0)
+            # Calculate loss
+            loss = loss_fn(predictions, targets)
+            total_loss += loss.item() * inputs.size(0)
+            total_samples += inputs.size(0)
    
-    # # Calculate average loss
-    # avg_loss = total_loss / total_samples
-    # print(f"Test Loss: {avg_loss}")
+    # Calculate average loss
+    avg_loss = total_loss / total_samples
+    print(f"Test Loss: {avg_loss}")
  
  
     # Generate text from the model
