@@ -130,20 +130,25 @@ class RetNetModel(nn.Module):
         with torch.no_grad():
             for _ in range(generation_length):
                 predictions = self.forward(input_eval)
-                # Apply softmax to predictions
+
+                predictions = predictions[:, -1]
+                # Apply softmax to get probabilities
                 predictions = F.softmax(predictions, dim=-1)
-                # Get the last predicted word
-                predicted_id = predictions.argmax(dim=-1)[..., -1]
- 
- 
+
+                # Get the top-k predicted words
+                top_k = 5
+                topk_values, topk_indices = torch.topk(predictions, k=top_k, dim=-1)
+                # Sample from topk_values
+                predicted_id = torch.multinomial(topk_values.squeeze(), num_samples=1)
+                # Get the corresponding topk_indices
+                predicted_id = torch.gather(topk_indices.squeeze(), dim=-1, index=predicted_id)
+
                 # Add predicted word to the input (to be used as next input sequence)
                 input_eval = torch.cat([input_eval, predicted_id.unsqueeze(-1)], dim=-1)
- 
- 
+
                 # Convert predicted word id to word
                 predicted_word = self.tokenizer.itos(predicted_id.tolist())
- 
- 
+
                 text_generated.append(predicted_word)
  
  
@@ -257,20 +262,25 @@ class TransformerModel(nn.Module):
         with torch.no_grad():
             for _ in range(generation_length):
                 predictions = self.forward(input_eval)
+
+                predictions = predictions[:, -1]
                 # Apply softmax to get probabilities
                 predictions = F.softmax(predictions, dim=-1)
-                # Get the last predicted word
-                predicted_id = predictions.argmax(dim=-1)[..., -1]
- 
- 
+
+                # Get the top-k predicted words
+                top_k = 5
+                topk_values, topk_indices = torch.topk(predictions, k=top_k, dim=-1)
+                # Sample from topk_values
+                predicted_id = torch.multinomial(topk_values.squeeze(), num_samples=1)
+                # Get the corresponding topk_indices
+                predicted_id = torch.gather(topk_indices.squeeze(), dim=-1, index=predicted_id)
+
                 # Add predicted word to the input (to be used as next input sequence)
                 input_eval = torch.cat([input_eval, predicted_id.unsqueeze(-1)], dim=-1)
- 
- 
+
                 # Convert predicted word id to word
                 predicted_word = self.tokenizer.itos(predicted_id.tolist())
- 
- 
+
                 text_generated.append(predicted_word)
  
  
