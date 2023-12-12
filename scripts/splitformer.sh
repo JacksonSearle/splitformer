@@ -7,7 +7,7 @@ python3 ../train_model.py \
     --fsdp True \
     --layers 1 \
     --lr 0.001 \
-    --model retnet \
+    --model splitformer \
     --heads 8 \
     --seq-len 128 \
     --value-embed-dim 32 \
@@ -15,4 +15,4 @@ python3 ../train_model.py \
     --device cpu \
     --epochs 10 \
     --batch-size 128 \
-
+    --tokens-per-pass 2 \

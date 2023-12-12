@@ -338,7 +338,7 @@ class SplitformerModel(nn.Module):
                 decoder_layers=layers,
                 dropout=dropout,
                 activation_dropout=activation_dropout,
-                vocab_size=vocab_size,
+                vocab_size=vocab_size * tokens_per_pass, # This is different
                 checkpoint_activations=checkpoint_activations,
                 fsdp=fsdp)
  
@@ -349,6 +349,9 @@ class SplitformerModel(nn.Module):
  
         # Save vocab_size for final dimensions later
         self.vocab_size = vocab_size
+
+        # Save tokens_per_pass for final dimensions later
+        self.tokens_per_pass = tokens_per_pass
  
  
         # Create embeddings with index 0 representing padding
@@ -366,6 +369,7 @@ class SplitformerModel(nn.Module):
         return logits
    
     def generate_text(self, start_string, generation_length=100, device='cuda'):
+        # Change this to generate 2 tokens at a time
         # Evaluation mode
         self.decoder_stack.eval()
         self.decoder_stack.to(device)
@@ -383,23 +387,29 @@ class SplitformerModel(nn.Module):
  
         # No gradients needed
         with torch.no_grad():
-            for _ in range(generation_length):
+            for _ in range(generation_length // self.tokens_per_pass):
                 predictions = self.forward(input_eval)
+                # Reshape predictions
+                C = self.vocab_size
+                S = self.tokens_per_pass
+                B, T, A = predictions.shape
+                # Select the last T tokens
+                predictions = predictions[:, -1:, :]
+                T = 1
+                predictions = predictions.reshape(B * T * S, C)
                 # Apply softmax to get probabilities
                 predictions = F.softmax(predictions, dim=-1)
-                # Get the last predicted word
-                predicted_id = predictions.argmax(dim=-1)[..., -1]
- 
+
+                # Add predicted words to the input (to be used as next input sequence)
+                predicted_ids = torch.argmax(predictions, dim=1)
  
                 # Add predicted word to the input (to be used as next input sequence)
-                input_eval = torch.cat([input_eval, predicted_id.unsqueeze(-1)], dim=-1)
- 
+                input_eval = torch.cat([input_eval, predicted_ids.unsqueeze(0)], dim=-1)
  
                 # Convert predicted word id to word
-                predicted_word = self.tokenizer.itos(predicted_id.tolist())
+                predicted_words = self.tokenizer.itos(predicted_ids.tolist())
  
- 
-                text_generated.append(predicted_word)
+                text_generated.append(predicted_words)
  
  
         return start_string + ' ' + ' '.join(text_generated)
@@ -447,7 +457,7 @@ if __name__ == "__main__":
             help="Device to use (GPU).")
     parser.add_argument("--epochs", type=int, default=10,
             help="Number of epochs to train for.")
-    parser.add_argument("--tokens-per-pass", type=int, default=2,
+    parser.add_argument("--tokens-per-pass", type=int, default=1,
             help="Number of tokens to generate for each forward pass in the splitformer model.")
  
  
@@ -465,6 +475,15 @@ if __name__ == "__main__":
     assert args.value_embed_dim % args.heads == 0, \
             "Value Embed Dimension not divisible by number of heads " + \
             f"({args.value_embed_dim} % {args.heads} != 0)!"
+    
+    # Test that if it is a splitformer model
+    if args.model == "splitformer":
+        # That the tokens per pass is less than the sequence length
+        assert args.tokens_per_pass < args.seq_len, \
+                "Tokens per pass must be less than the sequence length!"
+        # And assert tokens per pass is greater than 1
+        assert args.tokens_per_pass > 1, \
+                "Tokens per pass must be greater than 1!"
  
  
     # Create requested model
@@ -538,7 +557,7 @@ if __name__ == "__main__":
  
  
     # Load the dataset
-    train_loader, valid_loader, test_loader, tokenizer = load_wikitext2(max_seq_len=args.seq_len, batch_size=args.batch_size)
+    train_loader, valid_loader, test_loader, tokenizer = load_wikitext2(max_seq_len=args.seq_len, batch_size=args.batch_size, tokens_per_pass=args.tokens_per_pass)
     model.tokenizer = tokenizer
  
  
@@ -580,16 +599,22 @@ if __name__ == "__main__":
             # Get model predictions
             predictions = model(inputs, encoder_padding_mask=encoder_padding_mask)
 
-            # Get the 30 most likely predicted tokens and their probabilities
-            max_predictions = predictions.topk(k=30, dim=-1)
-            most_likely_tokens = max_predictions.indices
-            probabilities = max_predictions.values
-           
-            # Reshape the model outputs to match the expected shape for CrossEntropyLoss
-            B, T, C = predictions.shape
-            predictions = predictions.reshape(B * T, C)
-            B, T = targets.shape
-            targets = targets.reshape(B * T)
+            if args.model != "splitformer": 
+                # Reshape the model outputs to match the expected shape for CrossEntropyLoss
+                B, T, C = predictions.shape
+                predictions = predictions.reshape(B * T, C)
+                B, T = targets.shape
+                targets = targets.reshape(B * T)
+            else:
+                # Reshape the model outputs to match the expected shape for CrossEntropyLoss
+                S = args.tokens_per_pass
+                C = args.vocab_size
+                # A == S*C
+                B, T, A = predictions.shape
+                #TODO: Check that this is right for a test example
+                predictions = predictions.reshape(B * T * S, C)
+                B, T, S = targets.shape
+                targets = targets.reshape(B * T * S)
        
             # Calculate loss
             loss = loss_fn(predictions, targets)
@@ -644,34 +669,34 @@ if __name__ == "__main__":
     # torch.save(model, f"{args.model}.pt")
  
  
-    # Test the model
-    print('\nTesting model...')
-    model.eval()
-    total_loss = 0
-    total_samples = 0
-    with torch.no_grad():
-        for inputs, targets in tqdm(test_loader, mininterval=60): # Prints progress bar every mininterval seconds
-            # Put inputs and targets on device
-            inputs = inputs.to(device)
-            targets = targets.to(device)
+    # # Test the model
+    # print('\nTesting model...')
+    # model.eval()
+    # total_loss = 0
+    # total_samples = 0
+    # with torch.no_grad():
+    #     for inputs, targets in tqdm(test_loader, mininterval=60): # Prints progress bar every mininterval seconds
+    #         # Put inputs and targets on device
+    #         inputs = inputs.to(device)
+    #         targets = targets.to(device)
            
-            # Get model predictions
-            predictions = model(inputs)
+    #         # Get model predictions
+    #         predictions = model(inputs)
            
-            # Reshape the model outputs to match the expected shape for CrossEntropyLoss
-            B, T, C = predictions.shape
-            predictions = predictions.reshape(B * T, C)
-            B, T = targets.shape
-            targets = targets.reshape(B * T)
+    #         # Reshape the model outputs to match the expected shape for CrossEntropyLoss
+    #         B, T, C = predictions.shape
+    #         predictions = predictions.reshape(B * T, C)
+    #         B, T = targets.shape
+    #         targets = targets.reshape(B * T)
            
-            # Calculate loss
-            loss = loss_fn(predictions, targets)
-            total_loss += loss.item() * inputs.size(0)
-            total_samples += inputs.size(0)
+    #         # Calculate loss
+    #         loss = loss_fn(predictions, targets)
+    #         total_loss += loss.item() * inputs.size(0)
+    #         total_samples += inputs.size(0)
    
-    # Calculate average loss
-    avg_loss = total_loss / total_samples
-    print(f"Test Loss: {avg_loss}")
+    # # Calculate average loss
+    # avg_loss = total_loss / total_samples
+    # print(f"Test Loss: {avg_loss}")
  
  
     # Generate text from the model
