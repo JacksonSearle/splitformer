@@ -10,10 +10,12 @@ from torchscale.architecture.decoder import Decoder
 from torchscale.architecture.retnet import RetNetDecoder 
 from torchscale.architecture.splitformer import SplitformerDecoder
 
-from save_load import save_model
+from save import save_model
 
 
 import os
+
+import time
 
 
 import pickle
@@ -600,6 +602,7 @@ if __name__ == "__main__":
     if not args.speed_test:
         # Train the model
         print('\nTraining model...')
+        start = time.time()
         for epoch in range(args.epochs):
             print(f'Epoch {epoch + 1}')
             for batch_idx, (inputs, targets) in enumerate(tqdm(train_loader, mininterval=60)): # Prints progress bar every mininterval seconds
@@ -688,6 +691,8 @@ if __name__ == "__main__":
                         print(f"Validation Loss: {avg_val_loss}")
                 
                     model.train()
+        end = time.time()
+        print(f"Time to train: {end - start}")
     
     
         # Test the model
@@ -735,14 +740,21 @@ if __name__ == "__main__":
         print(f"Test Loss: {avg_loss}")
         # Calculate perplexity
         perplexity = torch.exp(torch.tensor(avg_loss))
+        print(f"Perplexity: {perplexity}")
  
  
     # Generate text from the model
+    # Print how long it takes to generate the text
     print('\nGenerating text...')
+    start = time.time()
+    
     print(model.generate_text(start_string="<pad>", generation_length=100, device=device))
     print(model.generate_text(start_string="= valkyria", generation_length=100, device=device))
     print(model.generate_text(start_string="= = reception =", generation_length=100, device=device))
     print(model.generate_text(start_string="the item was intended", generation_length=100, device=device))
+
+    end = time.time()
+    print(f"Time to generate text: {end - start}")
  
 
     # # Save the model
