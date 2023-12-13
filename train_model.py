@@ -9,8 +9,16 @@ from torchscale.architecture.config import DecoderConfig, RetNetConfig
 from torchscale.architecture.decoder import Decoder
 from torchscale.architecture.retnet import RetNetDecoder 
 from torchscale.architecture.splitformer import SplitformerDecoder
- 
- 
+
+from save_load import save_model
+
+
+import os
+
+
+import pickle
+
+
 from torchinfo import summary as model_summary
  
  
@@ -85,7 +93,6 @@ class RetNetModel(nn.Module):
                 checkpoint_activations=checkpoint_activations,
                 fsdp=fsdp)
  
- 
         # Save max_seq_len for padding later
         self.max_seq_len = max_seq_len
  
@@ -102,18 +109,18 @@ class RetNetModel(nn.Module):
  
  
         #TODO: Check that we are masking correctly
-        self.decoder_stack = RetNetDecoder(config, embed_tokens=self.text_embeddings)
+        self.model = RetNetDecoder(config, embed_tokens=self.text_embeddings)
  
  
     def forward(self, x: torch.Tensor, encoder_padding_mask=False) -> torch.Tensor:
-        logits, other_stuff = self.decoder_stack(x, encoder_padding_mask=encoder_padding_mask)
+        logits, other_stuff = self.model(x, encoder_padding_mask=encoder_padding_mask)
         return logits
  
  
     def generate_text(self, start_string, generation_length=100, device='cuda'):
         # Evaluation mode
-        self.decoder_stack.eval()
-        self.decoder_stack.to(device)
+        self.model.eval()
+        self.model.to(device)
  
  
         # Convert start string to numbers
@@ -154,9 +161,7 @@ class RetNetModel(nn.Module):
  
         return start_string + ' ' + ' '.join(text_generated)
  
- 
- 
- 
+
 class TransformerModel(nn.Module):
     def __init__(
             self,
@@ -203,7 +208,7 @@ class TransformerModel(nn.Module):
                 "vocab_size": vocab_size,
                 "checkpoint_activations": checkpoint_activations,
                 "fsdp": fsdp,
-                "max_seq_len": max_seq_len
+                "max_seq_len": max_seq_len,
                 }
  
  
@@ -235,17 +240,17 @@ class TransformerModel(nn.Module):
                 padding_idx=1)
  
  
-        self.decoder_stack = Decoder(config, embed_tokens=self.text_embeddings)
+        self.model = Decoder(config, embed_tokens=self.text_embeddings)
  
  
     def forward(self, x: torch.Tensor, encoder_padding_mask=False) -> torch.Tensor:
-        logits, other_stuff = self.decoder_stack(x, encoder_padding_mask=encoder_padding_mask)
+        logits, other_stuff = self.model(x, encoder_padding_mask=encoder_padding_mask)
         return logits
    
     def generate_text(self, start_string, generation_length=100, device='cuda'):
         # Evaluation mode
-        self.decoder_stack.eval()
-        self.decoder_stack.to(device)
+        self.model.eval()
+        self.model.to(device)
  
  
         # Convert start string to numbers
@@ -371,18 +376,18 @@ class SplitformerModel(nn.Module):
                 padding_idx=1)
  
  
-        self.decoder_stack = SplitformerDecoder(config, embed_tokens=self.text_embeddings)
+        self.model = SplitformerDecoder(config, embed_tokens=self.text_embeddings)
  
  
     def forward(self, x: torch.Tensor, encoder_padding_mask=False) -> torch.Tensor:
-        logits, other_stuff = self.decoder_stack(x, encoder_padding_mask=encoder_padding_mask)
+        logits, other_stuff = self.model(x, encoder_padding_mask=encoder_padding_mask)
         return logits
    
     def generate_text(self, start_string, generation_length=100, device='cuda'):
         # Change this to generate 2 tokens at a time
         # Evaluation mode
-        self.decoder_stack.eval()
-        self.decoder_stack.to(device)
+        self.model.eval()
+        self.model.to(device)
  
  
         # Convert start string to numbers
@@ -469,6 +474,10 @@ if __name__ == "__main__":
             help="Number of epochs to train for.")
     parser.add_argument("--tokens-per-pass", type=int, default=1,
             help="Number of tokens to generate for each forward pass in the splitformer model.")
+    parser.add_argument("--speed-test", type=bool, default=False,
+            help="Whether to run a speed test or not.")
+    parser.add_argument("--save-name", type=str, default="model",
+            help="Name to save the model to.")
  
  
     args = parser.parse_args()
@@ -494,7 +503,7 @@ if __name__ == "__main__":
         # And assert tokens per pass is greater than 1
         assert args.tokens_per_pass > 1, \
                 "Tokens per pass must be greater than 1!"
- 
+
  
     # Create requested model
     if args.model == "retnet":
@@ -537,6 +546,12 @@ if __name__ == "__main__":
                 fsdp=args.fsdp,
                 max_seq_len=args.seq_len,
                 tokens_per_pass=args.tokens_per_pass)
+        
+
+    # TODO: Allow for different datasets and tokenizers
+    # Load the dataset
+    train_loader, valid_loader, test_loader, tokenizer = load_wikitext2(max_seq_len=args.seq_len, batch_size=args.batch_size, tokens_per_pass=args.tokens_per_pass)
+    model.tokenizer = tokenizer
    
  
  
@@ -566,11 +581,6 @@ if __name__ == "__main__":
     print(f'-log(1 / {args.vocab_size}) = {-torch.log(torch.tensor(1 / args.vocab_size))}')
  
  
-    # Load the dataset
-    train_loader, valid_loader, test_loader, tokenizer = load_wikitext2(max_seq_len=args.seq_len, batch_size=args.batch_size, tokens_per_pass=args.tokens_per_pass)
-    model.tokenizer = tokenizer
- 
- 
     # Define loss function
     loss_fn = nn.CrossEntropyLoss()
  
@@ -587,140 +597,144 @@ if __name__ == "__main__":
     model = model.to(device)
  
  
-    # Train the model
-    print('\nTraining model...')
-    for epoch in range(args.epochs):
-        print(f'Epoch {epoch + 1}')
-        for batch_idx, (inputs, targets) in enumerate(tqdm(train_loader, mininterval=60)): # Prints progress bar every mininterval seconds
-            
- 
-            # Make a sample padding mask where there are 0's for padding and 1's for real tokens
-            encoder_padding_mask = torch.ones(inputs.shape, dtype=torch.bool)
-            encoder_padding_mask[inputs == 1] = False
- 
-            # Put inputs and targets on device
-            inputs = inputs.to(device)
-            targets = targets.to(device)
-            encoder_padding_mask = encoder_padding_mask.to(device)
-       
-            # Zero out gradients
-            optimizer.zero_grad()
-       
-            # Get model predictions
-            predictions = model(inputs, encoder_padding_mask=encoder_padding_mask)
+    if not args.speed_test:
+        # Train the model
+        print('\nTraining model...')
+        for epoch in range(args.epochs):
+            print(f'Epoch {epoch + 1}')
+            for batch_idx, (inputs, targets) in enumerate(tqdm(train_loader, mininterval=60)): # Prints progress bar every mininterval seconds
+                
+    
+                # Make a sample padding mask where there are 0's for padding and 1's for real tokens
+                encoder_padding_mask = torch.ones(inputs.shape, dtype=torch.bool)
+                encoder_padding_mask[inputs == 1] = False
+    
+                # Put inputs and targets on device
+                inputs = inputs.to(device)
+                targets = targets.to(device)
+                encoder_padding_mask = encoder_padding_mask.to(device)
+        
+                # Zero out gradients
+                optimizer.zero_grad()
+        
+                # Get model predictions
+                predictions = model(inputs, encoder_padding_mask=encoder_padding_mask)
 
-            if args.model != "splitformer": 
-                # Reshape the model outputs to match the expected shape for CrossEntropyLoss
-                B, T, C = predictions.shape
-                predictions = predictions.reshape(B * T, C)
-                B, T = targets.shape
-                targets = targets.reshape(B * T)
-            else:
-                # Reshape the model outputs to match the expected shape for CrossEntropyLoss
-                S = args.tokens_per_pass
-                C = args.vocab_size
-                # A == S*C
-                B, T, A = predictions.shape
-                predictions = predictions.reshape(B * T * S, C)
-                B, T, S = targets.shape
-                targets = targets.reshape(B * T * S)
-       
-            # Calculate loss
-            loss = loss_fn(predictions, targets)
-       
-            # Backpropagate loss
-            loss.backward()
-       
-            # Update parameters
-            optimizer.step()
- 
-            # Run validation n times per epoch
-            n = 1
-            if batch_idx % (len(train_loader) // n) == 0:
-                # Print train loss
-                print(f"Train Loss: {loss.item()}")
-                model.eval()
-                with torch.no_grad():
-                    total_loss = 0
-                    total_samples = 0
-                    for val_inputs, val_targets in valid_loader:
-                        # Put validation inputs and targets on device
-                        val_inputs = val_inputs.to(device)
-                        val_targets = val_targets.to(device)
-                       
-                        # Get validation predictions
-                        val_predictions = model(val_inputs)
-                       
-                        if args.model != "splitformer": 
-                            # Reshape the model outputs to match the expected shape for CrossEntropyLoss
-                            B, T, C = val_predictions.shape
-                            val_predictions = val_predictions.reshape(B * T, C)
-                            B, T = val_targets.shape
-                            val_targets = val_targets.reshape(B * T)
-                        else:
-                            # Reshape the model outputs to match the expected shape for CrossEntropyLoss
-                            S = args.tokens_per_pass
-                            C = args.vocab_size
-                            # A == S*C
-                            B, T, A = val_predictions.shape
-                            val_predictions = val_predictions.reshape(B * T * S, C)
-                            B, T, S = val_targets.shape
-                            val_targets = val_targets.reshape(B * T * S)
-                       
-                        # Calculate validation loss
-                        val_loss = loss_fn(val_predictions, val_targets)
-                        total_loss += val_loss.item() * val_inputs.size(0)
-                        total_samples += val_inputs.size(0)
-                   
-                    # Calculate average validation loss
-                    avg_val_loss = total_loss / total_samples
-                    print(f"Validation Loss: {avg_val_loss}")
-               
-                model.train()
- 
- 
-    # # Save the model as a pickle file
-    # torch.save(model, f"{args.model}.pt")
- 
- 
-    # Test the model
-    print('\nTesting model...')
-    model.eval()
-    total_loss = 0
-    total_samples = 0
-    with torch.no_grad():
-        for inputs, targets in tqdm(test_loader, mininterval=60): # Prints progress bar every mininterval seconds
-            # Put inputs and targets on device
-            inputs = inputs.to(device)
-            targets = targets.to(device)
-           
-            # Get model predictions
-            predictions = model(inputs)
-           
-            if args.model != "splitformer": 
-                # Reshape the model outputs to match the expected shape for CrossEntropyLoss
-                B, T, C = predictions.shape
-                predictions = predictions.reshape(B * T, C)
-                B, T = targets.shape
-                targets = targets.reshape(B * T)
-            else:
-                # Reshape the model outputs to match the expected shape for CrossEntropyLoss
-                S = args.tokens_per_pass
-                C = args.vocab_size
-                # A == S*C
-                B, T, A = predictions.shape
-                predictions = predictions.reshape(B * T * S, C)
-                B, T, S = targets.shape
-                targets = targets.reshape(B * T * S)
-           
-            # Calculate loss
-            loss = loss_fn(predictions, targets)
-            total_loss += loss.item() * inputs.size(0)
-            total_samples += inputs.size(0)
-   
-    # Calculate average loss
-    avg_loss = total_loss / total_samples
-    print(f"Test Loss: {avg_loss}")
+                if args.model != "splitformer": 
+                    # Reshape the model outputs to match the expected shape for CrossEntropyLoss
+                    B, T, C = predictions.shape
+                    predictions = predictions.reshape(B * T, C)
+                    B, T = targets.shape
+                    targets = targets.reshape(B * T)
+                else:
+                    # Reshape the model outputs to match the expected shape for CrossEntropyLoss
+                    S = args.tokens_per_pass
+                    C = args.vocab_size
+                    # A == S*C
+                    B, T, A = predictions.shape
+                    predictions = predictions.reshape(B * T * S, C)
+                    B, T, S = targets.shape
+                    targets = targets.reshape(B * T * S)
+        
+                # Calculate loss
+                loss = loss_fn(predictions, targets)
+        
+                # Backpropagate loss
+                loss.backward()
+        
+                # Update parameters
+                optimizer.step()
+    
+                # Run validation n times per epoch
+                n = 1
+                if batch_idx % (len(train_loader) // n) == 0:
+                    # Print train loss
+                    print(f"Train Loss: {loss.item()}")
+                    model.eval()
+                    with torch.no_grad():
+                        total_loss = 0
+                        total_samples = 0
+                        for val_inputs, val_targets in valid_loader:
+                            # Put validation inputs and targets on device
+                            val_inputs = val_inputs.to(device)
+                            val_targets = val_targets.to(device)
+                        
+                            # Get validation predictions
+                            val_predictions = model(val_inputs)
+                        
+                            if args.model != "splitformer": 
+                                # Reshape the model outputs to match the expected shape for CrossEntropyLoss
+                                B, T, C = val_predictions.shape
+                                val_predictions = val_predictions.reshape(B * T, C)
+                                B, T = val_targets.shape
+                                val_targets = val_targets.reshape(B * T)
+                            else:
+                                # Reshape the model outputs to match the expected shape for CrossEntropyLoss
+                                S = args.tokens_per_pass
+                                C = args.vocab_size
+                                # A == S*C
+                                B, T, A = val_predictions.shape
+                                val_predictions = val_predictions.reshape(B * T * S, C)
+                                B, T, S = val_targets.shape
+                                val_targets = val_targets.reshape(B * T * S)
+                        
+                            # Calculate validation loss
+                            val_loss = loss_fn(val_predictions, val_targets)
+                            total_loss += val_loss.item() * val_inputs.size(0)
+                            total_samples += val_inputs.size(0)
+                    
+                        # Calculate average validation loss
+                        avg_val_loss = total_loss / total_samples
+                        print(f"Validation Loss: {avg_val_loss}")
+                
+                    model.train()
+    
+    
+        # Test the model
+        print('\nTesting model...')
+        model.eval()
+        total_loss = 0
+        total_samples = 0
+        with torch.no_grad():
+            for inputs, targets in tqdm(test_loader, mininterval=60): # Prints progress bar every mininterval seconds
+                # Put inputs and targets on device
+                inputs = inputs.to(device)
+                targets = targets.to(device)
+
+                # Get model predictions
+                predictions = model(inputs)
+            
+                if args.model != "splitformer": 
+                    # Reshape the model outputs to match the expected shape for CrossEntropyLoss
+                    B, T, C = predictions.shape
+                    predictions = predictions.reshape(B * T, C)
+                    B, T = targets.shape
+                    targets = targets.reshape(B * T)
+                else:
+                    # Go through predictions on the T dimension and select indexes 0, S, 2S, 3S, etc. for perplexity
+                    predictions = predictions[:, 0::S, :]
+                    # Go through targets on the T dimension and select indexes 0, S, 2S, 3S, etc. for perplexity
+                    targets = targets[:, 0::S, :]
+
+                    # Reshape the model outputs to match the expected shape for CrossEntropyLoss
+                    S = args.tokens_per_pass
+                    C = args.vocab_size
+                    # A == S*C
+                    B, T, A = predictions.shape
+                    predictions = predictions.reshape(B * T * S, C)
+                    B, T, S = targets.shape
+                    targets = targets.reshape(B * T * S)
+            
+                # Calculate loss
+                loss = loss_fn(predictions, targets)
+                total_loss += loss.item() * inputs.size(0)
+                total_samples += inputs.size(0)
+    
+        # Calculate average loss
+        avg_loss = total_loss / total_samples
+        print(f"Test Loss: {avg_loss}")
+        # Calculate perplexity
+        perplexity = torch.exp(torch.tensor(avg_loss))
  
  
     # Generate text from the model
@@ -730,6 +744,10 @@ if __name__ == "__main__":
     print(model.generate_text(start_string="= = reception =", generation_length=100, device=device))
     print(model.generate_text(start_string="the item was intended", generation_length=100, device=device))
  
- 
-    # Say where the model was saved
-    print(f"\nModel saved to {args.model}.pt")
+
+    # # Save the model
+    # if args.save_name == "model":
+    #     save_name = args.model
+    # else:
+    #     save_name = args.save_name
+    # save_model(save_name, model)
