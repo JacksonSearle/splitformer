@@ -12,7 +12,7 @@ python3 ../train_model.py \
     --seq-len 128 \
     --value-embed-dim 32 \
     --vocab-size 28783 \
-    --device cpu \
+    --device cuda \
     --epochs 10 \
     --batch-size 128 \
 

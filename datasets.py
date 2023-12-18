@@ -17,7 +17,7 @@ class Tokenizer():
     def itos(self, token_indices):
         return self.tokens_to_text(token_indices)
 
-def load_wikitext2(max_seq_len, batch_size):
+def load_wikitext2(max_seq_len, batch_size, tokens_per_pass):
     """ Loads the WikiText2 dataset and returns the train, validation and test data loaders
     Args:
         max_seq_len (int): Maximum sequence length
@@ -79,14 +79,23 @@ def load_wikitext2(max_seq_len, batch_size):
         def __len__(self):
             return len(self.data)
 
+        
         def __getitem__(self, idx):
             item = self.data[idx]
             # Ensure the sequence is of MAX_SEQ_LEN
             item_padded = F.pad(item, (0, max_seq_len - len(item)), value=vocab["<pad>"])
             # Input is the entire sequence
             input = item_padded
-            # Target is the same sequence shifted by one position and padded
-            target = F.pad(item_padded[1:], (0, 1), value=vocab["<pad>"])
+            if tokens_per_pass > 1:
+                passes = []
+                for i in range(tokens_per_pass):
+                    # Target is the same sequence shifted by one position and padded
+                    target = F.pad(item_padded[1+i:], (0, 1+i), value=vocab["<pad>"])
+                    passes.append(target)
+                target = torch.stack(passes, dim=1)
+            else:
+                # Target is the same sequence shifted by one position and padded
+                target = F.pad(item_padded[1:], (0, 1), value=vocab["<pad>"])
             return input, target
 
     # Create datasets
@@ -95,7 +104,7 @@ def load_wikitext2(max_seq_len, batch_size):
     test_dataset = WikiTextDataset(test_data)
 
     # DataLoader
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     valid_loader = DataLoader(valid_dataset, batch_size=batch_size)
     test_loader = DataLoader(test_dataset, batch_size=batch_size)
 

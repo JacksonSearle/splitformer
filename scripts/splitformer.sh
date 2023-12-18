@@ -22,7 +22,7 @@ python3 ../train_model.py \
     --fsdp True \
     --layers 8 \
     --lr 0.001 \
-    --model transformer \
+    --model splitformer \
     --heads 8 \
     --seq-len 512 \
     --value-embed-dim 128 \
@@ -30,3 +30,4 @@ python3 ../train_model.py \
     --device cuda \
     --epochs 30 \
     --batch-size 16 \
+    --tokens-per-pass 10 \
